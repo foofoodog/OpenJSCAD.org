@@ -31,6 +31,7 @@
   "auto reload": "Enable Auto-reload",
   "auto zoom": "Enable Auto-zoom",
   "export":"Export",
+  "copy for layerling":"Copy for Layerling",
   "load project":"Load a JSCAD project",
 
   "AMF (experimental)":"AMF",

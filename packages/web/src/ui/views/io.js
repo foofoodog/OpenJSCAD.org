@@ -24,6 +24,7 @@ const io = (state, i18n) => {
         ${formatsList}
         </select>
         <input type='button' value="${i18n`export`}" id="exportBtn"/>
+        <input type='button' value="${i18n`copy for layerling`}" id="copyLayerlingBtn" title="Copy model to clipboard as STL for pasting into Layerling"/>
       </span>
     </span>
     `
