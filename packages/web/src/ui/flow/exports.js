@@ -1,7 +1,8 @@
 const most = require('most')
 
 const { solidsAsBlob } = require('@jscad/io')
-const { geometries, modifiers } = require('@jscad/modeling')
+const { geometries, modifiers, extrusions } = require('@jscad/modeling')
+const { flatten } = require('@jscad/array-utils')
 
 const { withLatestFrom } = require('../../most-utils')
 
@@ -98,14 +99,91 @@ const solidToLayerlingShape = (solid, index, designName = 'JSCAD') => {
 }
 
 const solidsToLayerlingClipboard = (solids, designName) => {
-  const solids3d = solids.filter((s) => geometries.geom3.isA(s))
-  if (solids3d.length === 0) throw new Error('No 3D solids to export')
+  const flat = flatten(solids || [])
+  const solids3d = []
+  for (const item of flat) {
+    if (!item) continue
+    if (geometries.geom3.isA(item)) {
+      solids3d.push(item)
+    } else if (geometries.geom2.isA(item)) {
+      // Auto-extrude 2D shapes so they can be exported to Layerling as 3D meshes
+      try {
+        const extruded = extrusions.extrudeLinear({ height: 2 }, item)
+        if (item.color) extruded.color = item.color
+        solids3d.push(extruded)
+      } catch (err) {
+        console.warn('Could not extrude 2D geometry for Layerling:', err)
+      }
+    }
+  }
+
+  if (solids3d.length === 0) {
+    throw new Error('No 3D solids or 2D shapes found in current design')
+  }
+
   const shapes = solids3d.map((s, i) => solidToLayerlingShape(s, i, designName))
   const payload = {
     copiedAt: Date.now(),
     shapes
   }
-  return `LAYERLING/1\n${JSON.stringify(payload, null, 4)}`
+  return {
+    text: `LAYERLING/1\n${JSON.stringify(payload, null, 4)}`,
+    count: shapes.length
+  }
+}
+
+let toastTimer = null
+const notifyUser = (message, isError = true) => {
+  if (typeof document === 'undefined') return
+
+  // 1. Update button text and styling
+  const btn = document.getElementById('copyLayerlingBtn')
+  if (btn) {
+    const original = btn.value
+    btn.value = isError ? 'Error!' : 'Copied!'
+    const origBg = btn.style.backgroundColor
+    const origColor = btn.style.color
+    btn.style.backgroundColor = isError ? '#e53935' : '#43a047'
+    btn.style.color = '#ffffff'
+    setTimeout(() => {
+      btn.value = original
+      btn.style.backgroundColor = origBg
+      btn.style.color = origColor
+    }, 2000)
+  }
+
+  // 2. Display on-screen toast notification banner
+  let toast = document.getElementById('jscad-layerling-toast')
+  if (!toast) {
+    toast = document.createElement('div')
+    toast.id = 'jscad-layerling-toast'
+    toast.style.position = 'fixed'
+    toast.style.bottom = '24px'
+    toast.style.right = '24px'
+    toast.style.zIndex = '999999'
+    toast.style.padding = '12px 20px'
+    toast.style.borderRadius = '6px'
+    toast.style.fontSize = '14px'
+    toast.style.fontFamily = "'Open Sans', sans-serif"
+    toast.style.boxShadow = '0 4px 14px rgba(0,0,0,0.35)'
+    toast.style.transition = 'opacity 0.3s ease, transform 0.3s ease'
+    toast.style.pointerEvents = 'none'
+    document.body.appendChild(toast)
+  }
+
+  toast.textContent = message
+  toast.style.backgroundColor = isError ? '#c62828' : '#2e7d32'
+  toast.style.color = '#ffffff'
+  toast.style.opacity = '1'
+  toast.style.transform = 'translateY(0)'
+
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    if (toast) {
+      toast.style.opacity = '0'
+      toast.style.transform = 'translateY(12px)'
+    }
+  }, isError ? 4000 : 3000)
 }
 
 const copyTextToClipboard = (text) => {
@@ -169,33 +247,39 @@ const reducers = {
   },
 
   copyForLayerling: (state) => {
-    const { solids } = state.design
-    if (!solids || solids.length === 0) {
-      console.warn('No solids to copy')
+    if (state.status && state.status.busy) {
+      notifyUser('Design is still compiling, please wait...', true)
       return
     }
+
+    const { solids } = state.design
+    if (!solids || solids.length === 0) {
+      console.warn('No solids available to copy (design may still be compiling or is empty)')
+      notifyUser('No model available to copy. Please load or compile a design first.', true)
+      return
+    }
+
     let layerlingClipboardText
+    let shapeCount = 0
     try {
       const designName = state.design && state.design.name ? state.design.name : 'JSCAD'
-      layerlingClipboardText = solidsToLayerlingClipboard(solids, designName)
+      const result = solidsToLayerlingClipboard(solids, designName)
+      layerlingClipboardText = result.text
+      shapeCount = result.count
     } catch (e) {
-      console.error('Failed to serialize solids for Layerling:', e)
+      const msg = e && e.message ? e.message : 'Unknown conversion error'
+      console.warn('Cannot copy for Layerling:', msg)
+      notifyUser(`Error: ${msg}`, true)
       return
     }
 
     if (layerlingClipboardText) {
       copyTextToClipboard(layerlingClipboardText).then(() => {
         console.log('Model copied to clipboard in Layerling format (LAYERLING/1)')
-        const btn = typeof document !== 'undefined' && document.getElementById('copyLayerlingBtn')
-        if (btn) {
-          const originalValue = btn.value
-          btn.value = 'Copied!'
-          setTimeout(() => {
-            btn.value = originalValue
-          }, 1500)
-        }
+        notifyUser(`Copied ${shapeCount} shape(s) for Layerling! Paste with Ctrl+V in Layerling.`, false)
       }).catch((err) => {
         console.error('Clipboard write failed:', err)
+        notifyUser('Clipboard access blocked. Opening in a new window to copy.', true)
         const w = window.open('', '_blank')
         if (w) {
           w.document.write('<pre>' + layerlingClipboardText.replace(/</g, '&lt;') + '</pre>')
